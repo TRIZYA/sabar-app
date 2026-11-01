@@ -20,7 +20,8 @@ const currencyFormatter = new Intl.NumberFormat('id-ID', {
 })
 
 function formatPrice(value) {
-  return currencyFormatter.format(Number(value) || 0)
+  const price = Number(value)
+  return Number.isSafeInteger(price) && price > 0 ? currencyFormatter.format(price) : 'Belum diatur'
 }
 
 function formatDate(value, options = { day: 'numeric', month: 'short', year: 'numeric' }) {
@@ -29,18 +30,43 @@ function formatDate(value, options = { day: 'numeric', month: 'short', year: 'nu
 }
 
 function isTargetReached(product) {
-  return Number(product.currentPrice) <= Number(product.targetPrice)
+  const currentPrice = Number(product.currentPrice)
+  const targetPrice = Number(product.targetPrice)
+  return Number.isSafeInteger(currentPrice) && currentPrice > 0
+    && Number.isSafeInteger(targetPrice) && targetPrice > 0
+    && currentPrice <= targetPrice
+}
+
+function hasProductUrl(product) {
+  try {
+    const url = new URL(product?.url)
+    return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password
+  } catch {
+    return false
+  }
+}
+
+function isProductIncomplete(product) {
+  return !(typeof product?.name === 'string' && product.name.trim())
+    || !hasProductUrl(product)
+    || !Number.isSafeInteger(Number(product.currentPrice)) || Number(product.currentPrice) <= 0
+    || !Number.isSafeInteger(Number(product.targetPrice)) || Number(product.targetPrice) <= 0
+}
+
+function getProductName(product) {
+  const name = typeof product?.name === 'string' ? product.name.trim() : ''
+  return name || 'Produk tanpa nama'
 }
 
 function getVisibleProducts(products, search, storeFilter, statusFilter) {
   return products
     .filter((product) => {
-      const searchableText = `${product.name} ${product.store} ${product.url}`.toLowerCase()
+      const searchableText = `${getProductName(product)} ${product.store || ''} ${product.url || ''}`.toLowerCase()
       const matchesSearch = searchableText.includes(search.trim().toLowerCase())
       const matchesStore = storeFilter === 'all' || product.store === storeFilter
       const matchesStatus = statusFilter === 'all'
         || (statusFilter === 'target' && isTargetReached(product))
-        || (statusFilter === 'error' && product.status === 'error')
+        || (statusFilter === 'error' && (product.status === 'error' || isProductIncomplete(product)))
         || (statusFilter === 'paused' && product.status === 'dijeda')
         || (statusFilter === 'active' && product.status === 'aktif' && !isTargetReached(product))
       return matchesSearch && matchesStore && matchesStatus
@@ -59,8 +85,9 @@ function PriceChart({ points, targetPrice }) {
   const width = 760
   const height = 250
   const padding = 28
-  const prices = [...points.map((point) => Number(point.price)), Number(targetPrice)]
-    .filter(Number.isFinite)
+  const hasTarget = Number.isSafeInteger(Number(targetPrice)) && Number(targetPrice) > 0
+  const prices = points.map((point) => Number(point.price))
+  if (hasTarget) prices.push(Number(targetPrice))
   const minimum = Math.min(...prices)
   const maximum = Math.max(...prices)
   const range = maximum - minimum || 1
@@ -77,7 +104,7 @@ function PriceChart({ points, targetPrice }) {
       preserveAspectRatio="none"
     >
       <line x1={padding} x2={width - padding} y1={height - padding} y2={height - padding} className="chart-axis" />
-      <line x1={padding} x2={width - padding} y1={yFor(targetPrice)} y2={yFor(targetPrice)} className="chart-target" />
+      {hasTarget && <line x1={padding} x2={width - padding} y1={yFor(targetPrice)} y2={yFor(targetPrice)} className="chart-target" />}
       <polyline points={linePoints} className="chart-line" />
       {points.map((point, index) => (
         <circle key={`${point.id}-${point.checkedAt}`} cx={xFor(index)} cy={yFor(point.price)} r="4" className="chart-point">
@@ -95,6 +122,9 @@ function StatusBadge({ product }) {
   if (product.status === 'dijeda') {
     return <span className="status-badge status-paused"><span className="status-dot" />Dijeda</span>
   }
+  if (isProductIncomplete(product)) {
+    return <span className="status-badge status-error"><span className="status-dot" />Data belum lengkap</span>
+  }
   if (isTargetReached(product)) {
     return <span className="status-badge status-target"><span className="status-dot" />Target tercapai</span>
   }
@@ -102,7 +132,7 @@ function StatusBadge({ product }) {
 }
 
 function ProductImage({ product }) {
-  const initials = product.name
+  const initials = getProductName(product)
     .split(/\s+/)
     .slice(0, 2)
     .map((word) => word[0])
@@ -141,6 +171,10 @@ function Dashboard({ user }) {
   const [historyRange, setHistoryRange] = useState('30')
   const [historyAnchor, setHistoryAnchor] = useState(0)
   const [detailState, setDetailState] = useState('idle')
+  const [isProductEditorOpen, setIsProductEditorOpen] = useState(false)
+  const [productEditForm, setProductEditForm] = useState({ name: '', url: '', targetPrice: '' })
+  const [productEditError, setProductEditError] = useState('')
+  const [isSavingProductEdit, setIsSavingProductEdit] = useState(false)
 
   useEffect(() => {
     let active = true
@@ -175,7 +209,7 @@ function Dashboard({ user }) {
   const visibleProducts = getVisibleProducts(products, search, storeFilter, statusFilter)
   const stores = [...new Set(products.map((product) => product.store).filter(Boolean))].sort()
   const reachedCount = products.filter(isTargetReached).length
-  const issueCount = products.filter((product) => product.status === 'error').length
+  const issueCount = products.filter((product) => product.status === 'error' || isProductIncomplete(product)).length
   const pausedCount = products.filter((product) => product.status === 'dijeda').length
 
   async function refreshProducts(showLoading = false) {
@@ -255,6 +289,8 @@ function Dashboard({ user }) {
     setPriceEditValue(String(product.currentPrice))
     setPriceEditError('')
     setIsPriceEditorOpen(false)
+    setIsProductEditorOpen(false)
+    setProductEditError('')
     setHistoryRange('30')
     setHistoryAnchor(Date.now())
     setDetailState('loading')
@@ -269,6 +305,47 @@ function Dashboard({ user }) {
     } catch (error) {
       setDetailState('error')
       setNotice({ type: 'error', message: error.message })
+    }
+  }
+
+  function openProductEditor(product) {
+    setProductEditForm({
+      name: typeof product.name === 'string' ? product.name : '',
+      url: typeof product.url === 'string' ? product.url : '',
+      targetPrice: Number.isSafeInteger(Number(product.targetPrice)) && Number(product.targetPrice) > 0
+        ? String(product.targetPrice)
+        : '',
+    })
+    setProductEditError('')
+    setIsProductEditorOpen(true)
+  }
+
+  async function saveProductDetails(event) {
+    event.preventDefault()
+    setProductEditError('')
+    const targetPrice = Number(productEditForm.targetPrice)
+    if (!Number.isSafeInteger(targetPrice) || targetPrice <= 0) {
+      setProductEditError('Masukkan harga target berupa bilangan bulat yang lebih dari nol.')
+      return
+    }
+
+    setIsSavingProductEdit(true)
+    try {
+      const updated = await api.updateProduct(selectedProduct.id, {
+        name: productEditForm.name.trim(),
+        url: productEditForm.url.trim(),
+        targetPrice,
+      })
+      setProducts((current) => current.map((item) => (item.id === updated.id ? updated : item)))
+      setSelectedProduct(updated)
+      setIsProductEditorOpen(false)
+      setNotice({ type: 'success', message: 'Detail produk berhasil diperbaiki.' })
+    } catch (error) {
+      setProductEditError(error instanceof ApiError && error.code === 'DUPLICATE_PRODUCT'
+        ? 'Tautan ini sudah digunakan oleh produk lain.'
+        : error.message)
+    } finally {
+      setIsSavingProductEdit(false)
     }
   }
 
@@ -309,7 +386,7 @@ function Dashboard({ user }) {
   }
 
   async function removeProduct(product) {
-    if (!window.confirm(`Hapus pantauan untuk "${product.name}" beserta riwayat harganya?`)) return
+    if (!window.confirm(`Hapus pantauan untuk "${getProductName(product)}" beserta riwayat harganya?`)) return
     setPendingAction(product.id)
     try {
       await api.deleteProduct(product.id)
@@ -468,8 +545,10 @@ function Dashboard({ user }) {
                             <div className="product-cell">
                               <ProductImage product={product} />
                               <div className="product-copy">
-                                <button type="button" className="product-name" onClick={() => openProductDetails(product)}>{product.name}</button>
-                                <span className="product-store">{product.store}</span>
+                                <button type="button" className="product-name" onClick={() => openProductDetails(product)}>{getProductName(product)}</button>
+                                {hasProductUrl(product)
+                                  ? <a className="product-store product-link" href={product.url} target="_blank" rel="noreferrer">{product.store || new URL(product.url).hostname}</a>
+                                  : <span className="product-store">Tautan belum ada</span>}
                               </div>
                             </div>
                           </td>
@@ -477,7 +556,9 @@ function Dashboard({ user }) {
                           <td>
                             <div className="target-cell">
                               <strong>{formatPrice(product.targetPrice)}</strong>
-                              {Number(product.currentPrice) > Number(product.targetPrice) && (
+                              {Number.isSafeInteger(Number(product.currentPrice)) && Number(product.currentPrice) > 0
+                                && Number.isSafeInteger(Number(product.targetPrice)) && Number(product.targetPrice) > 0
+                                && Number(product.currentPrice) > Number(product.targetPrice) && (
                                 <span className="target-gap">{formatPrice(Number(product.currentPrice) - Number(product.targetPrice))} lagi</span>
                               )}
                             </div>
@@ -490,11 +571,11 @@ function Dashboard({ user }) {
                                 type="button"
                                 className="icon-button"
                                 title={product.status === 'dijeda' ? 'Lanjutkan pantauan' : 'Jeda pantauan'}
-                                aria-label={product.status === 'dijeda' ? `Lanjutkan ${product.name}` : `Jeda ${product.name}`}
+                                aria-label={product.status === 'dijeda' ? `Lanjutkan ${getProductName(product)}` : `Jeda ${getProductName(product)}`}
                                 disabled={pendingAction === product.id || product.status === 'error'}
                                 onClick={() => updateProduct(product, { status: product.status === 'dijeda' ? 'aktif' : 'dijeda' })}
                               >{product.status === 'dijeda' ? '▶' : 'Ⅱ'}</button>
-                              <button type="button" className="icon-button icon-button-danger" title="Hapus produk" aria-label={`Hapus ${product.name}`} disabled={pendingAction === product.id} onClick={() => removeProduct(product)}>×</button>
+                              <button type="button" className="icon-button icon-button-danger" title="Hapus produk" aria-label={`Hapus ${getProductName(product)}`} disabled={pendingAction === product.id} onClick={() => removeProduct(product)}>×</button>
                             </div>
                           </td>
                         </tr>
@@ -570,10 +651,26 @@ function Dashboard({ user }) {
         <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && setSelectedProduct(null)}>
           <section className="modal-card detail-modal" role="dialog" aria-modal="true" aria-labelledby="detail-title">
             <div className="modal-header detail-header">
-              <div className="detail-title-wrap"><ProductImage product={selectedProduct} /><div><p className="eyebrow">DETAIL PANTAUAN</p><h2 id="detail-title">{selectedProduct.name}</h2><a href={selectedProduct.url} target="_blank" rel="noreferrer">Buka halaman produk <span aria-hidden="true">↗</span></a></div></div>
+              <div className="detail-title-wrap"><ProductImage product={selectedProduct} /><div><p className="eyebrow">DETAIL PANTAUAN</p><h2 id="detail-title">{getProductName(selectedProduct)}</h2>{hasProductUrl(selectedProduct) ? <a href={selectedProduct.url} target="_blank" rel="noreferrer">Buka halaman produk <span aria-hidden="true">↗</span></a> : <span className="missing-product-link">Tautan belum ada</span>}</div></div>
               <button type="button" className="icon-button modal-close" aria-label="Tutup detail" onClick={() => setSelectedProduct(null)}>×</button>
             </div>
-            <div className="detail-status"><StatusBadge product={selectedProduct} /><span>{selectedProduct.store}</span><span>Terakhir dicek {formatDate(selectedProduct.lastCheckedAt)}</span></div>
+            <div className="detail-status"><StatusBadge product={selectedProduct} /><span>{selectedProduct.store || 'Toko belum diketahui'}</span><span>Terakhir dicek {formatDate(selectedProduct.lastCheckedAt)}</span></div>
+            {isProductIncomplete(selectedProduct) && !isProductEditorOpen && (
+              <div className="incomplete-notice" role="status">
+                Data lama belum lengkap. Masukkan nama, tautan, dan target yang benar agar bisa dipantau.
+                <button type="button" className="auth-text-button" onClick={() => openProductEditor(selectedProduct)}>Perbaiki data</button>
+              </div>
+            )}
+            {isProductEditorOpen && (
+              <form className="product-edit-form" onSubmit={saveProductDetails}>
+                <p className="price-edit-note">Isi data yang benar dari halaman toko. Aplikasi belum mengambil nama atau harga secara otomatis.</p>
+                <label className="form-field"><span>Nama produk</span><input type="text" maxLength="240" value={productEditForm.name} onChange={(event) => setProductEditForm((current) => ({ ...current, name: event.target.value }))} required /></label>
+                <label className="form-field"><span>Tautan produk</span><input type="url" inputMode="url" value={productEditForm.url} onChange={(event) => setProductEditForm((current) => ({ ...current, url: event.target.value }))} required /></label>
+                <label className="form-field"><span>Harga target</span><div className="input-with-prefix"><span>Rp</span><input type="number" min="1" step="1" inputMode="numeric" placeholder="Masukkan target" value={productEditForm.targetPrice} onChange={(event) => setProductEditForm((current) => ({ ...current, targetPrice: event.target.value }))} required /></div></label>
+                {productEditError && <p className="form-error" role="alert">{productEditError}</p>}
+                <div className="form-actions"><button type="button" className="button button-quiet" onClick={() => setIsProductEditorOpen(false)}>Batal</button><button type="submit" className="button button-primary" disabled={isSavingProductEdit}>{isSavingProductEdit ? 'Menyimpan...' : 'Simpan detail'}</button></div>
+              </form>
+            )}
             <div className="detail-metrics">
               <div><span>Harga sekarang</span><strong>{formatPrice(selectedProduct.currentPrice)}</strong></div>
               <div><span>Harga target</span><strong>{formatPrice(selectedProduct.targetPrice)}</strong></div>
@@ -604,7 +701,10 @@ function Dashboard({ user }) {
             <div className="history-heading"><div><p className="eyebrow">PERGERAKAN HARGA</p><h3>Riwayat harga</h3></div><div className="range-control" aria-label="Rentang grafik">
               {[['7', '7 hari'], ['30', '30 hari'], ['all', 'Semua']].map(([value, label]) => <button key={value} type="button" className={historyRange === value ? 'range-active' : ''} onClick={() => setHistoryRange(value)}>{label}</button>)}
             </div></div>
-            <div className="chart-legend"><span><i className="legend-current" />Harga tercatat</span><span><i className="legend-target" />Harga target</span></div>
+            <div className="chart-legend">
+              <span><i className="legend-current" />Harga tercatat</span>
+              {Number.isSafeInteger(Number(selectedProduct.targetPrice)) && Number(selectedProduct.targetPrice) > 0 && <span><i className="legend-target" />Harga target</span>}
+            </div>
             {detailState === 'loading' && <div className="detail-loading"><span className="loading-ring" />Memuat riwayat...</div>}
             {detailState === 'error' && <div className="chart-empty">Riwayat belum dapat dimuat.</div>}
             {detailState === 'ready' && <PriceChart points={displayedHistory} targetPrice={selectedProduct.targetPrice} />}
@@ -614,6 +714,7 @@ function Dashboard({ user }) {
               </div>
             )}
             <div className="detail-actions">
+              <button type="button" className="button button-secondary" onClick={() => openProductEditor(selectedProduct)} disabled={isSavingProductEdit}>Ubah detail</button>
               <button type="button" className="button button-secondary" disabled={pendingAction === selectedProduct.id || selectedProduct.status === 'error'} onClick={() => updateProduct(selectedProduct, { status: selectedProduct.status === 'dijeda' ? 'aktif' : 'dijeda' })}>{selectedProduct.status === 'dijeda' ? 'Lanjutkan pantauan' : 'Jeda pantauan'}</button>
               <button type="button" className="button button-danger" disabled={pendingAction === selectedProduct.id} onClick={() => removeProduct(selectedProduct)}>Hapus produk</button>
             </div>

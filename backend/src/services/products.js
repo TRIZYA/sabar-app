@@ -72,6 +72,20 @@ export function normalizeManualProduct(input, now = Date.now()) {
 
 export function normalizeProductPatch(input) {
   const patch = {}
+  if (input?.name !== undefined) {
+    const name = typeof input.name === 'string' ? input.name.trim() : ''
+    if (name.length === 0 || name.length > 240) {
+      throw new ProductApiError(400, 'INVALID_NAME', 'Name must contain 1 to 240 characters.')
+    }
+    patch.name = name
+  }
+  if (input?.url !== undefined) {
+    const url = parseProductUrl(input.url)
+    const normalizedUrl = url.toString()
+    patch.url = normalizedUrl
+    patch.urlHash = createHash('sha256').update(normalizedUrl).digest('hex')
+    patch.store = url.hostname.replace(/^www\./, '')
+  }
   if (input?.currentPrice !== undefined) {
     patch.currentPrice = parsePrice(input.currentPrice, 'currentPrice')
   }
@@ -85,7 +99,7 @@ export function normalizeProductPatch(input) {
     patch.status = input.status
   }
   if (Object.keys(patch).length === 0) {
-    throw new ProductApiError(400, 'EMPTY_UPDATE', 'Provide currentPrice, targetPrice, or status to update.')
+    throw new ProductApiError(400, 'EMPTY_UPDATE', 'Provide product details, currentPrice, targetPrice, or status to update.')
   }
   return patch
 }
@@ -190,30 +204,70 @@ export async function updateProduct(database, userId, productId, input, now = Da
   const patch = normalizeProductPatch(input)
   const product = await getProduct(database, userId, id)
   const updates = { ...patch, updatedAt: now }
+  let previousUrlHash = typeof product.urlHash === 'string' ? product.urlHash : null
+  if (!previousUrlHash && typeof product.url === 'string') {
+    try {
+      previousUrlHash = createHash('sha256').update(parseProductUrl(product.url).toString()).digest('hex')
+    } catch {
+      previousUrlHash = null
+    }
+  }
+  const changedUrlHash = patch.urlHash && patch.urlHash !== previousUrlHash
+    ? patch.urlHash
+    : null
+  const urlHashRef = changedUrlHash
+    ? database.ref(`${userPath}/productUrlHashes/${changedUrlHash}`)
+    : null
 
-  if (patch.currentPrice !== undefined) {
-    const pointId = database.ref(`${userPath}/pricePoints/${id}`).push().key
-    if (!pointId) throw new Error('Unable to allocate a price point ID.')
-
-    const priorPrice = Number(product.currentPrice)
-    const priorLowest = Number.isSafeInteger(product.lowestPrice) ? product.lowestPrice : priorPrice
-    const priorHighest = Number.isSafeInteger(product.highestPrice) ? product.highestPrice : priorPrice
-    updates.lowestPrice = Math.min(priorLowest, patch.currentPrice)
-    updates.highestPrice = Math.max(priorHighest, patch.currentPrice)
-    updates.lastCheckedAt = now
-
-    await database.ref().update({
-      [`${productsPath}/${id}`]: updates,
-      [`${userPath}/pricePoints/${id}/${pointId}`]: {
-        price: patch.currentPrice,
-        checkedAt: now,
-        source: 'manual',
-      },
-    })
-    return { ...product, ...updates }
+  if (urlHashRef) {
+    const reservation = await urlHashRef.transaction((currentProductId) => (
+      currentProductId == null || currentProductId === id ? id : undefined
+    ))
+    if (!reservation.committed) {
+      throw new ProductApiError(409, 'DUPLICATE_PRODUCT', 'This product is already being tracked.', {
+        productId: reservation.snapshot.val(),
+      })
+    }
   }
 
-  await database.ref(`${productsPath}/${id}`).update(updates)
+  try {
+    if (patch.currentPrice !== undefined) {
+      const pointId = database.ref(`${userPath}/pricePoints/${id}`).push().key
+      if (!pointId) throw new Error('Unable to allocate a price point ID.')
+
+      const priorPrice = Number.isSafeInteger(product.currentPrice) ? product.currentPrice : patch.currentPrice
+      const priorLowest = Number.isSafeInteger(product.lowestPrice) ? product.lowestPrice : priorPrice
+      const priorHighest = Number.isSafeInteger(product.highestPrice) ? product.highestPrice : priorPrice
+      updates.lowestPrice = Math.min(priorLowest, patch.currentPrice)
+      updates.highestPrice = Math.max(priorHighest, patch.currentPrice)
+      updates.lastCheckedAt = now
+
+      await database.ref().update({
+        [`${productsPath}/${id}`]: updates,
+        [`${userPath}/pricePoints/${id}/${pointId}`]: {
+          price: patch.currentPrice,
+          checkedAt: now,
+          source: 'manual',
+        },
+      })
+    } else {
+      await database.ref(`${productsPath}/${id}`).update(updates)
+    }
+  } catch (error) {
+    if (urlHashRef) {
+      await urlHashRef.transaction((currentProductId) => (
+        currentProductId === id ? null : undefined
+      ))
+    }
+    throw error
+  }
+
+  if (urlHashRef && previousUrlHash) {
+    await database.ref(`${userPath}/productUrlHashes/${previousUrlHash}`).transaction((currentProductId) => (
+      currentProductId === id ? null : undefined
+    ))
+  }
+
   return { ...product, ...updates }
 }
 

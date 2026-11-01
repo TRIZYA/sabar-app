@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import test from 'node:test'
 import {
   normalizeManualProduct,
@@ -15,6 +16,7 @@ import {
 function createFakeDatabase() {
   const values = new Map()
   let nextId = 0
+  let shouldFailUpdate = false
 
   function makeSnapshot(value) {
     return { exists: () => value !== undefined, val: () => value ?? null }
@@ -22,6 +24,9 @@ function createFakeDatabase() {
 
   return {
     values,
+    failNextUpdate() {
+      shouldFailUpdate = true
+    },
     ref(path = '') {
       let queryLimit = Infinity
       return {
@@ -60,6 +65,19 @@ function createFakeDatabase() {
           return { committed: true, snapshot: makeSnapshot(nextValue) }
         },
         async update(updates) {
+          if (shouldFailUpdate) {
+            shouldFailUpdate = false
+            throw new Error('Simulated database write failure.')
+          }
+          if (path) {
+            const updatedValue = { ...(values.get(path) ?? {}) }
+            for (const [key, value] of Object.entries(updates)) {
+              if (value === null) delete updatedValue[key]
+              else updatedValue[key] = value
+            }
+            values.set(path, updatedValue)
+            return
+          }
           for (const [updatePath, value] of Object.entries(updates)) {
             if (value === null) values.delete(updatePath)
             else values.set(updatePath, value)
@@ -195,4 +213,84 @@ test('rejects invalid current price changes before writing', async () => {
     updateProduct(database, 'firebase-user-one', product.id, { currentPrice: 0 }, 2000),
     (error) => error instanceof ProductApiError && error.code === 'INVALID_PRICE',
   )
+})
+
+test('repairs incomplete product details and reserves the new URL', async () => {
+  const database = createFakeDatabase()
+  const userPath = getUserDataPath('firebase-user-one')
+  database.values.set(`${userPath}/products/legacy-product`, {
+    currentPrice: 125000,
+    targetPrice: 0,
+    status: 'aktif',
+  })
+
+  const updated = await updateProduct(database, 'firebase-user-one', 'legacy-product', {
+    name: 'Recovered product',
+    url: 'https://www.example.com/recovered#details',
+    targetPrice: 100000,
+  }, 3000)
+
+  const urlHash = createHash('sha256').update('https://www.example.com/recovered').digest('hex')
+  assert.equal(updated.name, 'Recovered product')
+  assert.equal(updated.url, 'https://www.example.com/recovered')
+  assert.equal(updated.store, 'example.com')
+  assert.equal(updated.targetPrice, 100000)
+  assert.equal(database.values.get(`${userPath}/productUrlHashes/${urlHash}`), 'legacy-product')
+  assert.equal(database.values.get(`${userPath}/products/legacy-product`).urlHash, urlHash)
+})
+
+test('prevents repairing a product with another product URL', async () => {
+  const database = createFakeDatabase()
+  const firstProduct = await createManualProduct(database, 'firebase-user-one', {
+    url: 'https://example.com/first',
+    name: 'First product',
+    currentPrice: 125000,
+    targetPrice: 100000,
+  })
+  const userPath = getUserDataPath('firebase-user-one')
+  database.values.set(`${userPath}/products/legacy-product`, {
+    currentPrice: 125000,
+    targetPrice: 0,
+    status: 'aktif',
+  })
+
+  await assert.rejects(
+    updateProduct(database, 'firebase-user-one', 'legacy-product', {
+      name: 'Duplicate product',
+      url: 'https://example.com/first',
+      targetPrice: 100000,
+    }),
+    (error) => error instanceof ProductApiError && error.code === 'DUPLICATE_PRODUCT',
+  )
+  assert.equal(database.values.get(`${userPath}/products/${firstProduct.id}`).name, 'First product')
+  assert.equal(database.values.get(`${userPath}/products/legacy-product`).name, undefined)
+})
+
+test('preserves the previous URL reservation and releases the new one on write failure', async () => {
+  const database = createFakeDatabase()
+  const userPath = getUserDataPath('firebase-user-one')
+  const previousUrl = 'https://example.com/previous'
+  const previousUrlHash = createHash('sha256').update(previousUrl).digest('hex')
+  database.values.set(`${userPath}/products/legacy-product`, {
+    url: previousUrl,
+    urlHash: previousUrlHash,
+    name: 'Legacy product',
+    currentPrice: 125000,
+    targetPrice: 100000,
+    status: 'aktif',
+  })
+  database.values.set(`${userPath}/productUrlHashes/${previousUrlHash}`, 'legacy-product')
+  database.failNextUpdate()
+
+  await assert.rejects(
+    updateProduct(database, 'firebase-user-one', 'legacy-product', {
+      url: 'https://example.com/new-url',
+    }),
+    /Simulated database write failure/,
+  )
+
+  const newUrlHash = createHash('sha256').update('https://example.com/new-url').digest('hex')
+  assert.equal(database.values.get(`${userPath}/productUrlHashes/${previousUrlHash}`), 'legacy-product')
+  assert.equal(database.values.has(`${userPath}/productUrlHashes/${newUrlHash}`), false)
+  assert.equal(database.values.get(`${userPath}/products/legacy-product`).url, previousUrl)
 })

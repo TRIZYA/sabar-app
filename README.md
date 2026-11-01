@@ -36,6 +36,8 @@ Hubungkan repository dengan **Root Directory** di root proyek. `vercel.json` mem
 
 Function menggunakan Node.js **26.x** dan mengunci `jwks-rsa` ke versi CommonJS yang kompatibel melalui `pnpm-workspace.yaml`, agar pemuatan Firebase Admin tidak bergantung pada `require()` terhadap dependency ESM. Pastikan deployment Vercel memakai lockfile pnpm terbaru.
 
+Header `Cross-Origin-Opener-Policy: same-origin-allow-popups` dipakai untuk mengizinkan alur popup Google Sign-In; header ini juga disetel pada server Vite lokal.
+
 Atur environment variables berikut di Vercel untuk setiap environment yang digunakan:
 
 - `VITE_FIREBASE_API_KEY`, `VITE_FIREBASE_AUTH_DOMAIN`, `VITE_FIREBASE_PROJECT_ID`, dan `VITE_FIREBASE_APP_ID` untuk Firebase Auth di frontend.
@@ -59,11 +61,11 @@ Semua endpoint produk dan `GET /api/health/firebase` membutuhkan `Authorization:
 - `GET /api/products`: daftar maksimal 100 produk terbaru.
 - `POST /api/products`: tambah produk dengan input manual `{ "url", "name", "currentPrice", "targetPrice", "image?" }`.
 - `GET /api/products/:productId`: detail produk.
-- `PATCH /api/products/:productId`: ubah harga sekarang, target, dan/atau status (`aktif` atau `dijeda`). Perubahan harga manual menambah titik histori.
+- `PATCH /api/products/:productId`: ubah nama, URL, harga sekarang, target, dan/atau status (`aktif` atau `dijeda`). Perubahan URL memeriksa duplikasi; perubahan harga manual menambah titik histori. Data produk lama yang tidak lengkap perlu diperbaiki dengan memasukkan nilai aslinya secara manual.
 - `DELETE /api/products/:productId`: hapus produk dan riwayatnya.
 - `GET /api/products/:productId/price-history?limit=90`: riwayat harga, maksimal 90 titik.
 
-Respons berhasil memakai `{ "data": ... }`; error memakai `{ "error": { "code", "message" } }`. Preview dan scraper otomatis belum tersedia sampai toko pertama dipilih.
+Respons berhasil memakai `{ "data": ... }`; error memakai `{ "error": { "code", "message" } }`. Preview dan scraper otomatis belum tersedia sampai toko pertama dipilih, sehingga nama dan harga tidak diambil otomatis dari tautan.
 
 ## Firebase
 
