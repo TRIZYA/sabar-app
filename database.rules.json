@@ -1,0 +1,21 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+    "users": {
+      "$userKey": {
+        "products": {
+          ".indexOn": ["store", "status", "createdAt"]
+        },
+        "pricePoints": {
+          "$productId": {
+            ".indexOn": ["checkedAt"]
+          }
+        },
+        "notifications": {
+          ".indexOn": ["productId", "sentAt"]
+        }
+      }
+    }
+  }
+}

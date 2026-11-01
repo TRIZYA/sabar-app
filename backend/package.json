@@ -1,0 +1,18 @@
+{
+  "name": "sabar-app-backend",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "nodemon --exec \"node --env-file=../.env\" src/index.js",
+    "start": "node --env-file=../.env src/index.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "express": "^5.3.0",
+    "firebase-admin": "^14.5.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.14"
+  }
+}
