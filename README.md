@@ -34,6 +34,8 @@ Frontend berjalan di `http://localhost:5173`, backend di `http://localhost:3000`
 
 Hubungkan repository dengan **Root Directory** di root proyek. `vercel.json` membangun frontend Vite sebagai aset statis, sedangkan `api/[...path].js` meneruskan semua rute `/api/*` ke Express backend.
 
+Function membutuhkan Node.js **26.x** untuk kompatibilitas dependency autentikasi `jose` yang berbasis ESM. Versi ini ditetapkan di `package.json`; pastikan pengaturan **Node.js Version** proyek Vercel tidak menimpanya dengan versi yang lebih lama.
+
 Atur environment variables berikut di Vercel untuk setiap environment yang digunakan:
 
 - `VITE_FIREBASE_API_KEY`, `VITE_FIREBASE_AUTH_DOMAIN`, `VITE_FIREBASE_PROJECT_ID`, dan `VITE_FIREBASE_APP_ID` untuk Firebase Auth di frontend.
