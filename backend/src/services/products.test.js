@@ -19,7 +19,7 @@ function createFakeDatabase() {
   let shouldFailUpdate = false
 
   function makeSnapshot(value) {
-    return { exists: () => value !== undefined, val: () => value ?? null }
+    return { exists: () => value !== undefined && value !== null, val: () => value ?? null }
   }
 
   return {
@@ -41,7 +41,8 @@ function createFakeDatabase() {
           const entries = [...values.entries()]
             .filter(([entryPath]) => entryPath.startsWith(prefix) && !entryPath.slice(prefix.length).includes('/'))
             .slice(-queryLimit)
-          return makeSnapshot(Object.fromEntries(entries.map(([entryPath, value]) => [entryPath.slice(prefix.length), value])))
+          const result = Object.fromEntries(entries.map(([entryPath, value]) => [entryPath.slice(prefix.length), value]))
+          return makeSnapshot(Object.keys(result).length > 0 ? result : null)
         },
         orderByChild() {
           return this
@@ -171,6 +172,54 @@ test('creates products atomically with a per-user URL reservation and releases i
   )
   await deleteProduct(database, 'firebase-user-one', product.id)
   assert.equal(database.values.has(reservationPath), false)
+})
+
+test('reclaims a URL reservation left behind by a deleted product', async () => {
+  const database = createFakeDatabase()
+  const userPath = getUserDataPath('firebase-user-one')
+  const url = 'https://example.com/previously-deleted'
+  const urlHash = createHash('sha256').update(url).digest('hex')
+  database.values.set(`${userPath}/productUrlHashes/${urlHash}`, '-P5NEeU0J7eoOVGPqahE')
+
+  const product = await createManualProduct(database, 'firebase-user-one', {
+    url,
+    name: 'Available again',
+    currentPrice: 125000,
+    targetPrice: 100000,
+  })
+
+  assert.equal(database.values.get(`${userPath}/productUrlHashes/${urlHash}`), product.id)
+  assert.equal(database.values.get(`${userPath}/products/${product.id}`).name, 'Available again')
+})
+
+test('deleting a legacy product without URL fields skips a URL-index scan', async () => {
+  const database = createFakeDatabase()
+  const userPath = getUserDataPath('firebase-user-one')
+  const urlHash = 'a'.repeat(64)
+  database.values.set(`${userPath}/products/legacy-product`, {
+    currentPrice: 125000,
+    targetPrice: 100000,
+  })
+  database.values.set(`${userPath}/productUrlHashes/${urlHash}`, 'legacy-product')
+
+  await deleteProduct(database, 'firebase-user-one', 'legacy-product')
+
+  assert.equal(database.values.has(`${userPath}/products/legacy-product`), false)
+  assert.equal(database.values.get(`${userPath}/productUrlHashes/${urlHash}`), 'legacy-product')
+})
+
+test('deleting a product without stored urlHash clears reservation derived from its URL', async () => {
+  const database = createFakeDatabase()
+  const userPath = getUserDataPath('firebase-user-one')
+  const url = 'https://example.com/legacy-product'
+  const urlHash = createHash('sha256').update(url).digest('hex')
+  database.values.set(`${userPath}/products/legacy-product`, { url })
+  database.values.set(`${userPath}/productUrlHashes/${urlHash}`, 'legacy-product')
+
+  await deleteProduct(database, 'firebase-user-one', 'legacy-product')
+
+  assert.equal(database.values.has(`${userPath}/products/legacy-product`), false)
+  assert.equal(database.values.has(`${userPath}/productUrlHashes/${urlHash}`), false)
 })
 
 test('updates current price atomically and appends a manual price point', async () => {

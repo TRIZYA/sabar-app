@@ -3,6 +3,7 @@ import { onAuthStateChanged, signOut } from 'firebase/auth'
 import AuthScreen from './components/AuthScreen.jsx'
 import { api, ApiError } from './utils/api.js'
 import { auth, authPersistenceReady, firebaseAuthConfigured } from './utils/firebase.js'
+import { formatPriceInput, parsePriceInput } from './utils/prices.js'
 import './App.css'
 
 const initialProductForm = {
@@ -184,16 +185,14 @@ function Dashboard({ user }) {
         if (!active) return
         setProducts(items)
         setPageState('ready')
+        setConnectionState('online')
       })
       .catch((error) => {
         if (!active) return
         setPageError(error.message)
         setPageState('error')
+        setConnectionState('offline')
       })
-
-    api.healthFirebase()
-      .then(() => active && setConnectionState('online'))
-      .catch(() => active && setConnectionState('offline'))
 
     return () => {
       active = false
@@ -219,8 +218,10 @@ function Dashboard({ user }) {
       setProducts(items)
       setPageError('')
       setPageState('ready')
+      setConnectionState('online')
     } catch (error) {
       setPageError(error.message)
+      setConnectionState('offline')
       if (products.length === 0) setPageState('error')
       else setNotice({ type: 'error', message: error.message })
     } finally {
@@ -259,13 +260,20 @@ function Dashboard({ user }) {
   async function saveProduct(event) {
     event.preventDefault()
     setFormError('')
+    const currentPrice = parsePriceInput(productForm.currentPrice)
+    const targetPrice = parsePriceInput(productForm.targetPrice)
+    if (currentPrice === null || targetPrice === null) {
+      setFormError('Masukkan harga sebagai bilangan bulat, misalnya 456.000.')
+      return
+    }
+
     setIsSaving(true)
     try {
       const created = await api.createProduct({
         url: productForm.url,
         name: productForm.name,
-        currentPrice: Number(productForm.currentPrice),
-        targetPrice: Number(productForm.targetPrice),
+        currentPrice,
+        targetPrice,
         ...(productForm.image.trim() ? { image: productForm.image.trim() } : {}),
       })
       setProducts((current) => [created, ...current.filter((item) => item.id !== created.id)])
@@ -286,7 +294,7 @@ function Dashboard({ user }) {
   async function openProductDetails(product) {
     setSelectedProduct(product)
     setPriceHistory([])
-    setPriceEditValue(String(product.currentPrice))
+    setPriceEditValue(formatPriceInput(product.currentPrice))
     setPriceEditError('')
     setIsPriceEditorOpen(false)
     setIsProductEditorOpen(false)
@@ -312,9 +320,7 @@ function Dashboard({ user }) {
     setProductEditForm({
       name: typeof product.name === 'string' ? product.name : '',
       url: typeof product.url === 'string' ? product.url : '',
-      targetPrice: Number.isSafeInteger(Number(product.targetPrice)) && Number(product.targetPrice) > 0
-        ? String(product.targetPrice)
-        : '',
+      targetPrice: formatPriceInput(product.targetPrice),
     })
     setProductEditError('')
     setIsProductEditorOpen(true)
@@ -323,8 +329,8 @@ function Dashboard({ user }) {
   async function saveProductDetails(event) {
     event.preventDefault()
     setProductEditError('')
-    const targetPrice = Number(productEditForm.targetPrice)
-    if (!Number.isSafeInteger(targetPrice) || targetPrice <= 0) {
+    const targetPrice = parsePriceInput(productEditForm.targetPrice)
+    if (targetPrice === null) {
       setProductEditError('Masukkan harga target berupa bilangan bulat yang lebih dari nol.')
       return
     }
@@ -376,8 +382,8 @@ function Dashboard({ user }) {
   async function saveCurrentPrice(event) {
     event.preventDefault()
     setPriceEditError('')
-    const currentPrice = Number(priceEditValue)
-    if (!Number.isSafeInteger(currentPrice) || currentPrice <= 0) {
+    const currentPrice = parsePriceInput(priceEditValue)
+    if (currentPrice === null) {
       setPriceEditError('Masukkan harga berupa bilangan bulat yang lebih dari nol.')
       return
     }
@@ -401,11 +407,11 @@ function Dashboard({ user }) {
   }
 
   function applySuggestedTarget() {
-    const currentPrice = Number(productForm.currentPrice)
-    if (currentPrice > 0) {
+    const currentPrice = parsePriceInput(productForm.currentPrice)
+    if (currentPrice !== null) {
       setProductForm((current) => ({
         ...current,
-        targetPrice: String(Math.round(currentPrice * 0.9)),
+        targetPrice: formatPriceInput(Math.round(currentPrice * 0.9)),
       }))
     }
   }
@@ -627,11 +633,11 @@ function Dashboard({ user }) {
                 <div className="form-grid-two">
                   <label className="form-field">
                     <span>Harga sekarang</span>
-                    <div className="input-with-prefix"><span>Rp</span><input type="number" min="1" step="1" inputMode="numeric" placeholder="0" value={productForm.currentPrice} onChange={(event) => setProductForm((current) => ({ ...current, currentPrice: event.target.value }))} required /></div>
+                    <div className="input-with-prefix"><span>Rp</span><input type="text" inputMode="numeric" placeholder="0" value={productForm.currentPrice} onChange={(event) => setProductForm((current) => ({ ...current, currentPrice: event.target.value }))} required /></div>
                   </label>
                   <label className="form-field">
                     <span>Harga target</span>
-                    <div className="input-with-prefix"><span>Rp</span><input type="number" min="1" step="1" inputMode="numeric" placeholder="0" value={productForm.targetPrice} onChange={(event) => setProductForm((current) => ({ ...current, targetPrice: event.target.value }))} required /></div>
+                    <div className="input-with-prefix"><span>Rp</span><input type="text" inputMode="numeric" placeholder="0" value={productForm.targetPrice} onChange={(event) => setProductForm((current) => ({ ...current, targetPrice: event.target.value }))} required /></div>
                   </label>
                 </div>
                 <button type="button" className="suggestion-link" onClick={applySuggestedTarget}>Gunakan saran target 10% lebih rendah</button>
@@ -666,7 +672,7 @@ function Dashboard({ user }) {
                 <p className="price-edit-note">Isi data yang benar dari halaman toko. Aplikasi belum mengambil nama atau harga secara otomatis.</p>
                 <label className="form-field"><span>Nama produk</span><input type="text" maxLength="240" value={productEditForm.name} onChange={(event) => setProductEditForm((current) => ({ ...current, name: event.target.value }))} required /></label>
                 <label className="form-field"><span>Tautan produk</span><input type="url" inputMode="url" value={productEditForm.url} onChange={(event) => setProductEditForm((current) => ({ ...current, url: event.target.value }))} required /></label>
-                <label className="form-field"><span>Harga target</span><div className="input-with-prefix"><span>Rp</span><input type="number" min="1" step="1" inputMode="numeric" placeholder="Masukkan target" value={productEditForm.targetPrice} onChange={(event) => setProductEditForm((current) => ({ ...current, targetPrice: event.target.value }))} required /></div></label>
+                <label className="form-field"><span>Harga target</span><div className="input-with-prefix"><span>Rp</span><input type="text" inputMode="numeric" placeholder="Masukkan target" value={productEditForm.targetPrice} onChange={(event) => setProductEditForm((current) => ({ ...current, targetPrice: event.target.value }))} required /></div></label>
                 {productEditError && <p className="form-error" role="alert">{productEditError}</p>}
                 <div className="form-actions"><button type="button" className="button button-quiet" onClick={() => setIsProductEditorOpen(false)}>Batal</button><button type="submit" className="button button-primary" disabled={isSavingProductEdit}>{isSavingProductEdit ? 'Menyimpan...' : 'Simpan detail'}</button></div>
               </form>
@@ -688,7 +694,7 @@ function Dashboard({ user }) {
               <form className="price-edit-form" onSubmit={saveCurrentPrice}>
                 <label className="form-field">
                   <span>Harga sekarang</span>
-                  <div className="input-with-prefix"><span>Rp</span><input type="number" min="1" step="1" inputMode="numeric" value={priceEditValue} onChange={(event) => setPriceEditValue(event.target.value)} required /></div>
+                  <div className="input-with-prefix"><span>Rp</span><input type="text" inputMode="numeric" value={priceEditValue} onChange={(event) => setPriceEditValue(event.target.value)} required /></div>
                 </label>
                 <p className="price-edit-note">Harga ini akan dicatat sebagai titik riwayat manual.</p>
                 {priceEditError && <p className="form-error" role="alert">{priceEditError}</p>}

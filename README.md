@@ -25,10 +25,10 @@ Jalankan frontend dan backend di terminal terpisah:
 
 ```bash
 pnpm dev
-pnpm --dir backend dev
+pnpm run dev:backend
 ```
 
-Frontend berjalan di `http://localhost:5173`, backend di `http://localhost:3000`.
+Frontend berjalan di `http://localhost:5173`, backend di `http://localhost:3000`. Script backend memakai nodemon untuk memulai ulang API saat file di `backend/src` berubah. Nodemon opsional; backend juga bisa dijalankan tanpa auto-restart dengan `pnpm --dir backend start`.
 
 ## Deploy ke Vercel
 

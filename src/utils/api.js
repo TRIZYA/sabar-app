@@ -7,6 +7,7 @@ function normalizeApiBaseUrl(value) {
 }
 
 const apiBaseUrl = normalizeApiBaseUrl(import.meta.env.VITE_API_BASE_URL)
+const apiTimeoutMs = 15_000
 
 export class ApiError extends Error {
   constructor(status, code, message, details) {
@@ -28,6 +29,7 @@ async function request(path, options = {}) {
     const idToken = await user.getIdToken()
     response = await fetch(`${apiBaseUrl}${path}`, {
       ...options,
+      signal: AbortSignal.timeout(apiTimeoutMs),
       headers: {
         Authorization: `Bearer ${idToken}`,
         ...(options.body ? { 'Content-Type': 'application/json' } : {}),
@@ -37,11 +39,21 @@ async function request(path, options = {}) {
     })
   } catch (error) {
     if (error instanceof ApiError) throw error
+    if (error.name === 'TimeoutError') {
+      throw new ApiError(0, 'API_TIMEOUT', 'Backend terlalu lama merespons. Coba segarkan lagi.')
+    }
     throw new ApiError(0, 'API_UNREACHABLE', 'Backend tidak dapat dijangkau. Coba lagi sebentar.')
   }
 
   const contentType = response.headers.get('content-type') || ''
   if (!contentType.includes('application/json')) {
+    if (response.status === 502 || response.status === 503) {
+      throw new ApiError(
+        response.status,
+        'API_UNAVAILABLE',
+        'Backend tidak merespons. Pastikan server backend berjalan di port 3000, lalu coba lagi.',
+      )
+    }
     throw new ApiError(response.status, 'INVALID_RESPONSE', 'Backend mengirim respons yang tidak dapat dibaca.')
   }
 

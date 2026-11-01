@@ -158,27 +158,41 @@ export async function createManualProduct(database, userId, input, now = Date.no
     throw new Error('Unable to allocate a product ID.')
   }
 
-  const urlHashRef = database.ref(`${userPath}/productUrlHashes/${product.urlHash}`)
-  const reservation = await urlHashRef.transaction((currentProductId) => (
-    currentProductId == null ? productId : undefined
-  ))
-
-  if (!reservation.committed) {
-    throw new ProductApiError(409, 'DUPLICATE_PRODUCT', 'This product is already being tracked.', {
-      productId: reservation.snapshot.val(),
-    })
-  }
-
   const pointId = database.ref(`${pricePointsPath}/${productId}`).push().key
   if (!pointId) {
-    await urlHashRef.transaction((currentProductId) => (
-      currentProductId === productId ? null : undefined
-    ))
     throw new Error('Unable to allocate a price point ID.')
   }
 
-  const savedProduct = { id: productId, ...product }
+  const urlHashRef = database.ref(`${userPath}/productUrlHashes/${product.urlHash}`)
+  let ownsReservation = false
   try {
+    let reservation
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      reservation = await urlHashRef.transaction((currentProductId) => (
+        currentProductId == null ? productId : undefined
+      ))
+      if (reservation.committed) break
+
+      const conflictingProductId = reservation.snapshot.val()
+      let existingProduct
+      if (typeof conflictingProductId === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(conflictingProductId)) {
+        existingProduct = await database.ref(`${productsPath}/${conflictingProductId}`).get()
+      }
+
+      if (existingProduct?.exists()) break
+      reservation = await urlHashRef.transaction((currentProductId) => (
+        currentProductId == null || currentProductId === conflictingProductId ? productId : undefined
+      ))
+      if (reservation.committed) break
+    }
+
+    if (!reservation.committed) {
+      throw new ProductApiError(409, 'DUPLICATE_PRODUCT', 'This product is already being tracked.', {
+        productId: reservation.snapshot.val(),
+      })
+    }
+
+    ownsReservation = true
     await database.ref().update({
       [`${productsPath}/${productId}`]: product,
       [`${pricePointsPath}/${productId}/${pointId}`]: {
@@ -188,13 +202,19 @@ export async function createManualProduct(database, userId, input, now = Date.no
       },
     })
   } catch (error) {
-    await urlHashRef.transaction((currentProductId) => (
-      currentProductId === productId ? null : undefined
-    ))
+    if (ownsReservation) {
+      await urlHashRef.transaction((currentProductId) => (
+        currentProductId === productId ? null : undefined
+      ))
+    }
+    await database.ref().update({
+      [`${productsPath}/${productId}`]: null,
+      [`${pricePointsPath}/${productId}`]: null,
+    })
     throw error
   }
 
-  return savedProduct
+  return { id: productId, ...product }
 }
 
 export async function updateProduct(database, userId, productId, input, now = Date.now()) {
@@ -279,7 +299,15 @@ export async function deleteProduct(database, userId, productId) {
     [`${userPath}/products/${id}`]: null,
     [`${userPath}/pricePoints/${id}`]: null,
   }
-  if (product.urlHash) updates[`${userPath}/productUrlHashes/${product.urlHash}`] = null
+  let urlHash = typeof product.urlHash === 'string' ? product.urlHash : null
+  if (!urlHash && typeof product.url === 'string') {
+    try {
+      urlHash = createHash('sha256').update(parseProductUrl(product.url).toString()).digest('hex')
+    } catch {
+      urlHash = null
+    }
+  }
+  if (urlHash) updates[`${userPath}/productUrlHashes/${urlHash}`] = null
   await database.ref().update(updates)
   return { id, deleted: true }
 }
